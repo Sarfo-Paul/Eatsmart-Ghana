@@ -38,6 +38,44 @@ export const AiAssistant: React.FC = () => {
     goals?: string[];
   }>({});
 
+  // System prompt guiding the AI to behave as Adwoa — Ghanaian dietitian
+  const SYSTEM_PROMPT = `You are Adwoa, an expert Ghanaian dietitian and cultural nutritionist. Provide concise, practical, evidence-informed dietary advice focused on Ghanaian foods. When asked, give meal plans, portion guidance, approximate calories, and culturally-appropriate food swaps. If a user mentions a medical condition (diabetes, hypertension, pregnancy, etc.) include a short disclaimer to consult a healthcare professional and avoid giving personalized medical diagnoses. Use friendly tone, bullet lists for plans, and short examples.`;
+
+  const sendToAdwoa = async (userText: string): Promise<string | null> => {
+    try {
+      const payload = {
+        // Upstream model name can be set by the provider; this default is optional.
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userText }
+        ],
+        max_tokens: 800
+      };
+
+      const res = await fetch('/api/adwoa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.error('AI API error', res.status, body);
+        return null;
+      }
+
+      const data = await res.json();
+      if (data?.text) return data.text;
+      if (typeof data === 'string') return data;
+      return null;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('sendToAdwoa failed', err);
+      return null;
+    }
+  };
+
   const calculateBMI = (height: number, weight: number): number => {
     const heightInMeters = height / 100;
     return weight / (heightInMeters * heightInMeters);
@@ -120,7 +158,7 @@ export const AiAssistant: React.FC = () => {
     return null;
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!inputValue.trim()) return;
 
     const userMessage: Message = {
@@ -131,41 +169,69 @@ export const AiAssistant: React.FC = () => {
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const userQuery = inputValue.toLowerCase();
+    const userQuery = inputValue;
     setInputValue('');
     setIsTyping(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      let aiResponseText = "That's a great question! Based on nutritional science and traditional Ghanaian cuisine, I recommend focusing on portion control, incorporating more vegetables, and choosing whole grain alternatives. For specific conditions like diabetes or hypertension, certain foods like kontomire stew and light soup are particularly beneficial.";
-      let messageType: Message['type'] = 'text';
-      
-      // Check for dietary assessment first
-      const assessmentResponse = generateDietaryAssessment(userQuery);
+    try {
+      // Quick local handling for BMI/profile requests or other quick assessments
+      const assessmentResponse = generateDietaryAssessment(userQuery.toLowerCase());
       if (assessmentResponse) {
-        aiResponseText = assessmentResponse;
-        messageType = 'assessment';
-      } else {
-        // Find best match in knowledge base
+        const aiMessage: Message = {
+          id: Math.random().toString(),
+          sender: 'ai',
+          text: assessmentResponse,
+          timestamp: new Date(),
+          type: 'assessment'
+        };
+        setMessages(prev => [...prev, aiMessage]);
+        setIsTyping(false);
+        return;
+      }
+
+      // Call the serverless AI proxy which forwards to the configured provider (Vercel AI / OpenAI / etc.)
+      const aiText = await sendToAdwoa(userQuery);
+
+      let finalText = aiText;
+      let messageType: Message['type'] = 'text';
+
+      if (!finalText) {
+        // Fallback to local knowledge base if external AI fails
         for (const item of localKnowledgeBaseAnswers) {
-          if (item.keywords.some(keyword => userQuery.includes(keyword))) {
-            aiResponseText = item.answer;
+          if (item.keywords.some(keyword => userQuery.toLowerCase().includes(keyword))) {
+            finalText = item.answer;
             break;
           }
         }
       }
 
+      if (!finalText) {
+        finalText = "Sorry — I'm having trouble reaching the AI service right now. Try again or ask a different question.";
+      }
+
       const aiMessage: Message = {
         id: Math.random().toString(),
         sender: 'ai',
-        text: aiResponseText,
+        text: finalText,
         timestamp: new Date(),
         type: messageType
       };
 
       setMessages(prev => [...prev, aiMessage]);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('handleSendMessage error', err);
+      const aiMessage: Message = {
+        id: Math.random().toString(),
+        sender: 'ai',
+        text: "Sorry, Adwoa is temporarily unavailable. Please try again later.",
+        timestamp: new Date(),
+        type: 'text'
+      };
+      setMessages(prev => [...prev, aiMessage]);
+    } finally {
       setIsTyping(false);
-    }, 1200);
+    }
   };
 
   const sampleQuestions = [
